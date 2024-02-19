@@ -19,8 +19,8 @@ def tokenize_baichuan(item, tokenizer):
         role = roles.get(turn['from'], 'USER')
         content = turn['value']
         content = content.strip()
-        if role == 'ASSISTANT' and content != '':
-            content += '</s>'
+        #if role == 'ASSISTANT' and content != '':
+        #    content += '</s>'
         role_ids = tokenizer.encode(role + ":", add_special_tokens=False)
         content_ids = tokenizer.encode(content, add_special_tokens=False, truncation=True,
                                        max_length=tokenizer.model_max_length)
@@ -56,7 +56,7 @@ def tokenize_Cllama2(item, tokenizer):
                 content_ids = []
             else:
                 content = f"{content} "
-                content_ids = tokenizer.encode(content, add_special_tokens=False) + [tokenizer.eos_token_id]   # add_special_tokens=False remove bos token, and add eos at the end
+                content_ids = tokenizer.encode(content, add_special_tokens=False)# + [tokenizer.eos_token_id]   # add_special_tokens=False remove bos token, and add eos at the end
         input_ids += content_ids
 
     input_ids = input_ids[-tokenizer.model_max_length:]

@@ -36,7 +36,7 @@ DEFAULT_IM_END_TOKEN = "<im_end>"
 
 
 class LlavaConfig(LlamaConfig):
-    model_type = "llava"
+    model_type = "zh-llava"
 
 
 class LlavaLlamaModel(LlamaModel):
@@ -328,5 +328,5 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM):
 
         vision_config.im_patch_token = tokenizer.convert_tokens_to_ids([DEFAULT_IMAGE_PATCH_TOKEN])[0]
 
-AutoConfig.register("llava", LlavaConfig)
+AutoConfig.register("zh-llava", LlavaConfig)
 AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)

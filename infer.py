@@ -1,6 +1,8 @@
 import os
+import sys
 import argparse
 import requests
+import warnings
 from PIL import Image
 from io import BytesIO
 
@@ -8,6 +10,7 @@ import torch
 from transformers import AutoTokenizer
 from transformers import CLIPVisionModel, CLIPImageProcessor, StoppingCriteria
 
+sys.path.append("other_repos/chinese_llava")
 from llava import LlavaLlamaForCausalLM
 from infer_tokenize import tokenize
 from logger import print_signature 
@@ -60,26 +63,40 @@ def load_image(image_file):
     return image
 
 
-def eval_model(args):
+def load_model(args):
     # Model
     disable_torch_init()
     model_name = os.path.expanduser(args.model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    model = LlavaLlamaForCausalLM.from_pretrained(model_name, low_cpu_mem_usage=True, torch_dtype=torch.float16, use_cache=True).cuda()
-    image_processor = CLIPImageProcessor.from_pretrained(model.config.mm_vision_tower, torch_dtype=torch.float16)
-
-    mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
-    tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
-    if mm_use_im_start_end:
-        tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True)
-
-    vision_tower = model.get_model().vision_tower[0]
-    if vision_tower.device.type == 'meta':
-        vision_tower = CLIPVisionModel.from_pretrained(vision_tower.config._name_or_path, torch_dtype=torch.float16, low_cpu_mem_usage=True).cuda()
-        model.get_model().vision_tower[0] = vision_tower
+    if args.device == 'cpu':
+        device = torch.device('cpu')
     else:
-        vision_tower.to(device='cuda', dtype=torch.float16)
+        assert torch.cuda.is_available()
+        device = torch.device('cuda', int(args.device))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        model = LlavaLlamaForCausalLM.from_pretrained(
+            model_name, low_cpu_mem_usage=True, 
+            torch_dtype=torch.float16, use_cache=True,
+            attn_implementation="flash_attention_2"
+        ).to(device)
+        image_processor = CLIPImageProcessor.from_pretrained(model.config.mm_vision_tower, torch_dtype=torch.float16)
+
+        mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
+        tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
+        if mm_use_im_start_end:
+            tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True)
+
+        vision_tower = model.get_model().vision_tower[0]
+        if vision_tower.device.type == 'meta':
+            vision_tower = CLIPVisionModel.from_pretrained(
+                vision_tower.config._name_or_path, torch_dtype=torch.float16, low_cpu_mem_usage=True
+            ).to(device)
+            model.get_model().vision_tower[0] = vision_tower
+        else:
+            vision_tower.to(device) #='cuda', dtype=torch.float16)
     vision_config = vision_tower.config
     vision_config.im_patch_token = tokenizer.convert_tokens_to_ids([DEFAULT_IMAGE_PATCH_TOKEN])[0]
     vision_config.use_im_start_end = mm_use_im_start_end
@@ -87,7 +104,10 @@ def eval_model(args):
         vision_config.im_start_token, vision_config.im_end_token = tokenizer.convert_tokens_to_ids([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN])
     image_token_len = (vision_config.image_size // vision_config.patch_size) ** 2
 
-    qs = args.query
+    return image_token_len, mm_use_im_start_end, image_processor, tokenizer, model, device
+
+
+def predict(qs, image_file, args, image_token_len, mm_use_im_start_end, image_processor, tokenizer, model, device, response_start=''):
     if mm_use_im_start_end:
         qs = qs + '\n' + DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_PATCH_TOKEN * image_token_len + DEFAULT_IM_END_TOKEN
     else:
@@ -101,14 +121,14 @@ def eval_model(args):
             },
             {
                 'from': 'gpt',
-                'value': ''
+                'value': response_start
             }
         ]
     }
     input_ids = [tokenize(query, tokenizer, args.llm_type)]
-    input_ids = torch.as_tensor(input_ids).cuda()
+    input_ids = torch.as_tensor(input_ids).to(device)
 
-    image = load_image(args.image_file)
+    image = load_image(image_file)
     image_tensor = image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 
     stop_str = '</s>'
@@ -118,10 +138,10 @@ def eval_model(args):
     with torch.inference_mode():
         output_ids = model.generate(
             input_ids,
-            images=image_tensor.unsqueeze(0).half().cuda(),
-            do_sample=True,
-            temperature=0.2,
-            max_new_tokens=1024,
+            images=image_tensor.unsqueeze(0).half().to(device),
+            do_sample=args.do_sample,
+            temperature=args.temperature,
+            max_new_tokens=args.max_new_tokens,
             stopping_criteria=[stopping_criteria])
 
     input_token_len = input_ids.shape[1]
@@ -134,12 +154,12 @@ def eval_model(args):
         outputs = outputs[:-len(stop_str)]
     outputs = outputs.strip()
 
-    print_signature()
-    print (f"Human: image({args.image_file}) {args.query}")
-    print (f"Chinese-LLaVA: {outputs}")
-    print ("="*80)
-    print ("Go to the Demo page, and have a try!")
-
+    #print_signature()
+    #print (f"Human: image({args.image_file}) {args.query}")
+    #print (f"Chinese-LLaVA: {outputs}")
+    #print ("="*80)
+    #print ("Go to the Demo page, and have a try!")
+    return outputs
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
